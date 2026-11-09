@@ -139,6 +139,9 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
     await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays),
   )
   ctx.inject(['webServer'], (webCtx) => {
+    // Hand the resolved web-server scope to the service so plugin-owned RPC
+    // channels (`connection.rpc.handle`) can mount as prefix routes too.
+    connection.attachWebServer(webCtx)
     assertImageBodyCapacity(webCtx, maxRequestBodyBytes)
     webCtx.on('webserver/index-inject', (table) => {
       table.push({ kind: 'global', name: '__DSH_CONNECTION_RECOVERY__', value: recovery })

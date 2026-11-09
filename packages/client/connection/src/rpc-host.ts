@@ -75,6 +75,10 @@ export class HostConnectionService extends Service implements HostConnectionHand
   private disposed = false
   private readonly interceptors = new Map<string, ConnectionRpcInterceptor>()
   private readonly fetchRoutes = new Map<string, RegisteredFetchRoute>()
+  /** Web-server scope once the transport resolves it; channels mount through it. */
+  private webCtx: Context | undefined
+  /** RPC channels registered before {@link attachWebServer} ran, keyed by channel. */
+  private readonly pendingChannels = new Map<string, WebRoute>()
 
   readonly allowsRemoteAuthorities: boolean
 
@@ -105,7 +109,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
   get rpc(): HostConnectionRpc {
     const owner = this.ctx
     return {
-      handle: (channel, handler) => this.register(owner, channel, handler),
+      handle: (channel, handler) => this.register(channel, handler),
       intercept: (channel, matches, handler) =>
         this.registerInterceptor(owner, channel, matches, handler),
     }
@@ -251,7 +255,6 @@ export class HostConnectionService extends Service implements HostConnectionHand
   }
 
   private register(
-    owner: Context,
     channel: string,
     handler: ConnectionRpcHandler,
   ): () => Promise<void> {
@@ -270,10 +273,39 @@ export class HostConnectionService extends Service implements HostConnectionHand
         await bridge(req, res, fetchHandler, admission.peer)
       },
     }
-    return owner.effect(
-      () => owner.webServer.register(route),
+    // The service context is carrier-neutral: `webServer` is neither declared
+    // nor reachable through it, so `owner.webServer` throws "cannot get
+    // property \"webServer\" without inject" and `this.ctx.inject(['webServer'],
+    // ...)` never fires here. Both would silently drop every RPC channel an
+    // out-of-tree plugin registers through `connection.rpc.handle()`: the route
+    // never reaches the web server, so the plugin's client calls fall through
+    // to the static fallback as HTTP 405. The transport therefore hands us its
+    // web-server scope once resolved ({@link attachWebServer}); channels
+    // registered before that point queue and mount on arrival.
+    const webCtx = this.webCtx
+    if (webCtx !== undefined) return this.mountChannel(webCtx, channel, route)
+    this.pendingChannels.set(channel, route)
+    return () => { this.pendingChannels.delete(channel); return Promise.resolve() }
+  }
+
+  /** Mount one RPC channel as a prefix route on the resolved web-server scope. */
+  private mountChannel(webCtx: Context, channel: string, route: WebRoute): () => Promise<void> {
+    return webCtx.effect(
+      () => webCtx.webServer.register(route),
       `client-connection: ${channel} rpc channel`,
     )
+  }
+
+  /**
+   * Bind the web-server scope the transport resolved, mounting every RPC
+   * channel that was registered through {@link HostConnectionRpc.handle}
+   * before this point.
+   * @param webCtx - context carrying the `webServer` injection.
+   */
+  attachWebServer(webCtx: Context): void {
+    this.webCtx = webCtx
+    for (const [channel, route] of this.pendingChannels) this.mountChannel(webCtx, channel, route)
+    this.pendingChannels.clear()
   }
 
   private registerInterceptor(
