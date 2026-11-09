@@ -271,6 +271,7 @@ pi-ai 事件变成 harness 的推理、文本、工具调用、用量与 finish 
 - **重试策略由提供方自有，而非 SDK 重试**——pi-ai SDK 重试保持禁用，因此持久 agent（智能体）步骤与 `llm/retry` 事件拥有每个可见尝试，直接 `ctx.llm.stream()` 调用仍是单次尝试。
 - **流式 JSON 工具调用参数避免逐 delta 重复解析**——安装的 pi-ai 带有 [`patches/@earendil-works__pi-ai@1.3.0.patch`](../../../patches/@earendil-works__pi-ai@1.3.0.patch)，它移除了每个流适配器中对整段累计参数 JSON 的逐 delta 重新解析（上游 [earendil-works/pi#9265](https://github.com/earendil-works/pi/issues/9265)）；未打补丁时，数 MB 的参数流会在事件循环上消耗 O(n²) CPU，并使进程内所有会话停滞。完成事件提供解析后的参数；Responses 可能在参数完成和输出项完成时分别解析。本适配器只读取 delta 字符串与最终参数。每次升级 pi-ai 时都要重新应用或撤销该补丁。
 - **Chat Completions 中的 Gemini 工具调用思考签名由补丁保留**——同一补丁把 OpenAI 兼容流式响应里的 `tool_calls[].extra_content.google.thought_signature` 读入工具调用的重放签名，并在同一模型继续时以 `extra_content` 发回（上游 [earendil-works/pi#10157](https://github.com/earendil-works/pi/issues/10157)）；未打补丁时，Gemini 会以 HTTP 400 拒绝工具调用轮次的下一步。OpenRouter 的加密推理详情仍通过 `reasoning_details` 重放。
+- **复用的流式 index 上的并行工具调用由补丁拆成独立调用**——同一补丁在一个流式 index 已持有另一个调用、且该调用的参数已闭合时，为新的具名 id 开启新的工具调用（上游 [earendil-works/pi#11908](https://github.com/earendil-works/pi/issues/11908)）；未打补丁时，把并行调用复用到同一个 index 的网关会把两段参数字符串合并成 `{...}{...}`，该轮以 `MALFORMED_RESPONSE` 失败。前一个调用的参数仍未闭合时，流本身是歧义的，仍保留合并失败。
 
 <a id="dev-note"></a>
 ### 开发备注
